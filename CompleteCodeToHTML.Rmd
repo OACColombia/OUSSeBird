@@ -1,0 +1,1576 @@
+---
+title: "Linking community science data with population dynamics under stochastic process in the context of ecological release"
+author: "Orlando Acevedo-Charry, José Miguel Ponciano, Scott K. Robinson, & Miguel A. Acevedo - Natya Hans is supporting HiperGator opperations and will be more involved for publications"
+date: "`r Sys.Date()`"
+output: html_document
+editor_options: 
+  markdown: 
+    wrap: 72
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## Could eBird data track population dynamics in time-series in the context of ecological release?
+
+Ecological release: Population level niche expansion and/or shift when
+antagonistic interspecific interaction is removed or reduced (Herrmann
+*et al.*, *TREE* 2021). Hypothetical ecological release could be
+explored as a function of species richness. Lower competition in islands
+expand niche (*e.g.*, abundance), while more habitats and more species
+increase level of specialization in the Mainland (Sherry *et al.*, *Auk*
+2020).
+
+Using the Caribbean meta-archipelago, we filtered the no-aquatic birds
+reported in eBird, between Julian day 125 and 150 from 2012-2013,
+between 6 and 11 hours in the morning. We excluded incomplete list and
+retained checklists of only "traveling" or "stationary" protocol, with a
+minimum effort of less than 2 km, more than 10 minutes but less than 2
+hours (10:120 min) and less than 10 observers. We assumed as counting
+samples the mean of counts of each species reported by the observers
+during the 25 days filtered per year; if the mean is very constant among
+independent observers, we assume a higher probability of detection,
+while higher variation of the counts might reflect a difference in
+detection probability. These data constitutes the primary time-series of
+species for different islands.
+
+To test a model of stochasticity process, we selected a widespread and
+easy to detect species in the meta-archipelago, which are distributed
+from the Mainland to different islands in the Caribbean: Bananaquit
+*Coereba flaveola*. Theory predicts that species in the mainland have
+lower density than islands, and that density could increase as species
+richness and potentially interspecific competition decreases.
+
+### Filtering eBird data in meta-archipelagos
+
+The code in HiperGator was (Do not run):
+
+```{r eval=FALSE}
+########################################
+###~ eBird data - Island filtering ~####
+########################################
+
+#Packages
+library(auk); #eBird data filters
+library(tidyverse); #manipulate data
+library(dggridR) #Spatiotemporal Subsampling
+library(iNEXT) #rarefaction
+
+#~ eBird data ~####
+#Data downloaded from eBird, up to August 2023, saved in the folder of the HPG
+
+#Define the range
+CaribbeanRange <- c(-91,8,-59,27)
+IndoMalayRange <- c(90,-20,180,20)
+
+#select the columns to extract (based on x$col_idx$name)
+colsE <- c("observer_id", "sampling_event_identifier",
+           "group identifier",
+           "common_name", "scientific_name",
+           "observation_count",
+           "country", "state_code", "locality_id", "latitude", "longitude",
+           "protocol_type", "all_species_reported",
+           "observation_date",
+           "time_observations_started",
+           "duration_minutes", "effort_distance_km",
+           "number_observers")
+
+#For Caribbean
+f_ebdCa <- "ebd_IslandsCa.txt" #Temporal file to save the filtering eBird data (records)
+f_sedCa <- "sed_IslandsCa.txt" #Temporal file to save the filtering sampling event data
+
+ebd_filtCarib<-auk_ebd("eBirddata/ebd_relAug-2023.txt",
+                       file_sampling = "eBirddata/ebd_sampling_relAug-2023.txt") %>%
+  auk_bbox(CaribbeanRange) %>% #W, S, E, N 
+  auk_year(c(2012:2023)) %>%
+  auk_protocol(c("Traveling", "Stationary")) %>%
+  auk_distance(distance = c(0,5)) %>%
+  auk_duration(duration = c(0,300))%>%
+  auk_complete() %>%
+  auk_filter(f_ebdCa, f_sedCa, overwrite=T, keep = colsE)
+
+f_ebdIM <- "eBirddata/ebd_IslandsIM.txt" #Temporal file to save the filtering eBird data (records)
+f_sedIM <- "eBirddata/sed_IslandsIM.txt" #Temporal file to save the filtering sampling event data
+
+ebd_filtIndoP<-auk_ebd("eBirddata/ebd_relAug-2023.txt",
+                       file_sampling = "eBirddata/ebd_sampling_relAug-2023.txt") %>%
+  auk_bbox(IndoMalayRange) %>% #W, S, E, N 
+  auk_year(c(2012:2023)) %>%
+  auk_protocol(c("Traveling", "Stationary")) %>%
+  auk_distance(distance = c(0,5)) %>%
+  auk_duration(duration = c(0,300))%>%
+  auk_complete() %>%
+  auk_filter(f_ebdIM, f_sedIM, overwrite=T, keep = colsE)
+
+#and with read_ebd I apply another filter to do not repeat records from groups
+sed_Carib <- read_sampling(f_sedCa)
+ebd_Carib <- read_ebd(f_ebdCa) 
+sed_IndoM <- read_sampling(f_sedIM)
+ebd_IndoM <- read_ebd(f_ebdIM) 
+
+# Function to convert time observation to hours since midnight
+time_to_decimal <- function(x) {
+  x <- hms(x, quiet = TRUE)
+  hour(x) + minute(x) / 60 + second(x) / 3600
+}
+
+#Caribbean data
+
+Carib_eff <- ebd_Carib %>%
+  mutate(
+    # I don't have here count in X to convert to NA
+    observation_count = as.integer(observation_count),
+    # effort_distance_km to 0 for non-travelling counts
+    effort_distance_km = if_else(protocol_type == "Stationary",
+                                 0, effort_distance_km),
+    # convert time to decimal hours since midnight
+    time_observations_started = time_to_decimal(time_observations_started),
+    hour_sampling = round(time_observations_started, 0),
+    # split date into year, month, week, and day of year
+    year = year(observation_date),
+    month = month(observation_date),
+    week = week(observation_date),
+    day_of_year = yday(observation_date)) %>%
+  filter(number_observers <= 10,         #Only list with less than 10 observers
+         effort_distance_km <= 5,        #be sure of distance effort
+         duration_minutes %in% (0:300), #be sure of duration effort
+         !is.na(observation_count))      #only records with abundance estimation
+
+Checklists_with_more_than_fourSppC <- Carib_eff %>%
+  select(sampling_event_identifier, scientific_name) %>%
+  group_by(sampling_event_identifier) %>%
+  summarise(N_species = n()) %>%
+  filter(N_species >= 4)
+#352797 lists
+
+Caribbean_cooc <- Carib_eff[Carib_eff$sampling_event_identifier %in% Checklists_with_more_than_fourSppC$sampling_event_identifier, ] 
+
+Carib_sed <- sed_Carib %>%
+  mutate(
+    # effort_distance_km to 0 for non-travelling counts
+    effort_distance_km = if_else(protocol_type == "Stationary",
+                                 0, effort_distance_km),
+    # convert time to decimal hours since midnight
+    time_observations_started = time_to_decimal(time_observations_started),
+    hour_sampling = round(time_observations_started, 0),
+    # split date into year, month, week, and day of year
+    year = year(observation_date),
+    month = month(observation_date),
+    week = week(observation_date),
+    day_of_year = yday(observation_date)) %>%
+  filter(number_observers <= 10,         #Only list with less than 10 observers
+         effort_distance_km <= 5,        #be sure of distance effort
+         duration_minutes %in% (0:300)) #be sure of duration effort
+
+#And now with the Oriental-Indo_Malayan-Papuan-Melanesian
+IndoM_eff <- ebd_IndoM %>%
+  mutate(
+    # I don't have here count in X to convert to NA
+    observation_count = as.integer(observation_count),
+    # effort_distance_km to 0 for non-travelling counts
+    effort_distance_km = if_else(protocol_type == "Stationary",
+                                 0, effort_distance_km),
+    # convert time to decimal hours since midnight
+    time_observations_started = time_to_decimal(time_observations_started),
+    hour_sampling = round(time_observations_started, 0),
+    # split date into year, month, week, and day of year
+    year = year(observation_date),
+    month = month(observation_date),
+    week = week(observation_date),
+    day_of_year = yday(observation_date)) %>%
+  filter(number_observers <= 10,         #Only list with less than 10 observers
+         effort_distance_km <= 5,        #be sure of distance effort
+         duration_minutes %in% (0:300), #be sure of duration effort
+         !is.na(observation_count))      #remove records without abundance estimation  
+
+Checklists_with_more_than_fourSppIP <- IndoM_eff %>%
+  select(sampling_event_identifier, scientific_name) %>%
+  group_by(sampling_event_identifier) %>%
+  summarise(N_species = n()) %>%
+  filter(N_species >= 4)
+
+IndoM_eff_cooc <- IndoM_eff[IndoM_eff$sampling_event_identifier %in% Checklists_with_more_than_fourSppIP$sampling_event_identifier, ]
+
+
+IndoM_sed <- sed_IndoM %>%
+  mutate(
+    # effort_distance_km to 0 for non-travelling counts
+    effort_distance_km = if_else(protocol_type == "Stationary",
+                                 0, effort_distance_km),
+    # convert time to decimal hours since midnight
+    time_observations_started = time_to_decimal(time_observations_started),
+    hour_sampling = round(time_observations_started, 0),
+    # split date into year, month, week, and day of year
+    year = year(observation_date),
+    month = month(observation_date),
+    week = week(observation_date),
+    day_of_year = yday(observation_date)) %>%
+  filter(number_observers <= 10,         #Only list with less than 10 observers
+         effort_distance_km <= 5,        #be sure of distance effort
+         duration_minutes %in% (0:300)) #be sure of duration effort
+
+#Only those land birds ####
+#AVONET filtered by No aquatics
+filterAvonet <- read.csv("filterAVONET/AVONET_filter_NoAquatics.csv")
+
+#to combine the data, we have to adjust the names
+names(filterAvonet)[2] <- "scientific_name"
+
+#filter in eBird data those species identify in AVONET as land birds
+ebird.carib = Caribbean_cooc[Caribbean_cooc$scientific_name %in% filterAvonet$scientific_name, ]
+ebird.indop = IndoM_eff_cooc[IndoM_eff_cooc$scientific_name %in% filterAvonet$scientific_name, ]
+
+##Spatial Grids ####
+set.seed(123)
+
+# Spatiotemporal Subsampling in diameters of ~1 km (area of ~100 km^2)
+dggs_island <- dgconstruct(spacing = 11) #spacing 1 correspond to Characteristic Length Scale, or diameter of spherical cell
+
+#add a new variable that identify cell
+Caribbean_SS <- ebird.carib %>%
+  mutate(cell = dgGEO_to_SEQNUM(dggs_island, #id for cells
+                                longitude, latitude)$seqnum) %>%
+  group_by(cell, scientific_name) %>%
+  mutate(mu_count = mean(observation_count))
+
+IndoPacific_SS <- ebird.indop %>%
+  filter(observation_count < 7000) %>% #there is an outlying count for _Eurylaimus ochromalus_ https://ebird.org/checklist/S112199250
+  mutate(cell = dgGEO_to_SEQNUM(dggs_island, #id for cells
+                                longitude, latitude)$seqnum) %>%
+  group_by(cell, scientific_name) %>%
+  mutate(mu_count = mean(observation_count))
+
+#Get the number of species in each cell
+RichnessCellCaribbean   <- Caribbean_SS %>% 
+  group_by(cell, scientific_name) %>%
+  summarise(count=n()) %>% 
+  group_by(cell) %>% 
+  summarise(SpRichness=n()) %>%
+  filter(SpRichness >= 4)
+
+#Exclude cells in SS with less than 4 species
+Caribbean_SS = Caribbean_SS[Caribbean_SS$cell %in% RichnessCellCaribbean$cell, ]
+
+#Community assemblages
+Caribbean_Cell_Assembly <- Caribbean_SS %>%
+  select(cell, scientific_name, mu_count) %>%
+  summarise(mu_count = mean(mu_count)) %>%
+  pivot_wider(names_from = cell, values_from = mu_count, values_fill = 0)
+
+#Get the grid cell boundaries for cells which had quakes
+gridCaribbean <- dgcellstogrid(dggs_island,RichnessCellCaribbean$cell)
+
+#Update the grid cells' properties to include the number of lists in each cell
+gridCaribbean <- merge(gridCaribbean,RichnessCellCaribbean,by.x="seqnum",by.y="cell")
+
+# Handle cells that cross 180 degrees
+wrapped_gridCaribbean = st_wrap_dateline(gridCaribbean, 
+                                         options = c("WRAPDATELINE=YES","DATELINEOFFSET=180"), quiet = TRUE)
+
+#Backup
+saveRDS(wrapped_gridCaribbean, "Completeness_data/wrapped_gridCaribbean.rds")
+saveRDS(Caribbean_SS, "Completeness_data/Caribbean_SS_140324.rds")
+saveRDS(Caribbean_Cell_Assembly, "Completeness_data/Caribbean_Cell_Assembly.rds")
+
+#Get the number of records in each cell
+RichnessCellIndoPacific   <- IndoPacific_SS %>% 
+  group_by(cell, scientific_name) %>%
+  summarise(count=n()) %>% 
+  group_by(cell) %>% 
+  summarise(SpRichness=n()) %>%
+  filter(SpRichness >= 4)
+
+#Exclude cells in SS with less than 4 species
+IndoPacific_SS = IndoPacific_SS[IndoPacific_SS$cell %in% RichnessCellIndoPacific$cell, ]
+
+#Community assemblages
+IndoPacific_Cell_Assembly <- IndoPacific_SS %>%
+  select(cell, scientific_name, mu_count) %>%
+  summarise(mu_count = mean(mu_count)) %>%
+  pivot_wider(names_from = cell, values_from = mu_count, values_fill = 0)
+
+#Get the grid cell boundaries for cells which had quakes
+gridIndoPacific <- dgcellstogrid(dggs_island,RichnessCellIndoPacific$cell)
+
+#Update the grid cells' properties to include the number of lists in each cell
+gridIndoPacific <- merge(gridIndoPacific,RichnessCellIndoPacific,by.x="seqnum",by.y="cell")
+
+# Handle cells that cross 180 degrees (and some weird in the map)
+wrapped_gridIndoPacific = st_wrap_dateline(gridIndoPacific, 
+                                           options = c("WRAPDATELINE=YES","DATELINEOFFSET=180"), quiet = TRUE)
+
+#Backup
+saveRDS(wrapped_gridIndoPacific, "Completeness_data/wrapped_gridIndoPacific.rds")
+saveRDS(IndoPacific_SS, "Completeness_data/IndoPacific_SS_140324.rds")
+saveRDS(IndoPacific_Cell_Assembly, "Completeness_data/IndoPacific_Cell_Assembly.rds")
+ 
+#End of this code
+
+```
+
+### Estimate sample-coverage completeness per sampling unit
+
+Then, we estimated the completeness by sampling units (Cell id in a grid
+of \~$100~ km^2$). This was also conducted in the HiperGator (Do not
+run):
+
+```{r eval=FALSE}
+### Assess completeness of the sampling units
+
+#* Orlando Acevedo-Charry
+#* Updated on March 22nd, 2024
+
+
+#Packages
+
+library(tidyverse)
+library(iNEXT) #rarefaction
+
+#Load the data from Code_Islands_eBird_filtering.R
+
+Caribbean_SS <- readRDS("Completeness_data/Caribbean_SS_140324.rds")
+IndoPacific_SS <- readRDS("Completeness_data/IndoPacific_SS_140324.rds")
+
+Caribbean_Cell_Assembly <- readRDS("Completeness_data/Caribbean_Cell_Assembly.rds")
+IndoPacific_Cell_Assembly <- readRDS("Completeness_data/IndoPacific_Cell_Assembly.rds")
+
+wrapped_gridCaribbean <- readRDS("Completeness_data/wrapped_gridCaribbean.rds")
+wrapped_gridIndoPacific <- readRDS("Completeness_data/wrapped_gridIndoPacific.rds")
+
+# Completeness with iNEXT and new grid ####
+
+#Caribbean region
+names(Caribbean_Cell_Assembly) #each row is a species (2254), and columns 2:10725 is the cell ID
+
+listCaribbean<-as.data.frame(Caribbean_Cell_Assembly[,2:ncol(Caribbean_Cell_Assembly)])
+
+#iNterpolation and EXTrapolation for the first three Hill numbers (see Chao et al. 2004):
+Caribbean_iNEXT<-iNEXT(listCaribbean,q=c(0,1,2), 
+                           datatype = "abundance", 
+                           endpoint = NULL, #double the reference sample size
+                           conf=0.95, nboot=500)
+saveRDS(Caribbean_Completeness, "Completeness_output/Caribbean_Completeness.rds") #DONE
+
+CompleteCaribbeanCells <- Caribbean_iNEXT$iNextEst$coverage_based %>%
+  filter(Method == "Observed" & Order.q %in% 0 & SC >= 0.9)  
+
+#Exclude cells in SS with less than 4 species
+Caribbean_SS = Caribbean_SS[Caribbean_SS$cell %in% CompleteCaribbeanCells$Assemblage, ]
+
+saveRDS(Caribbean_SS, "Completeness_output/Caribbean_SS_Completeness.rds") #DONE
+
+#Get the grid cell boundaries for cells with completeness >0.9
+wrapped_gridCaribbean = wrapped_gridCaribbean[wrapped_gridCaribbean$seqnum %in% CompleteCaribbeanCells$Assemblage, ]
+
+gridCaribbean = merge(wrapped_gridCaribbean,CompleteCaribbeanCells,by.x="seqnum",by.y="Assemblage")
+
+saveRDS(gridCaribbean, "Completeness_output/gridCaribbean.rds") #DONE
+
+#Now with the IndoPacific
+listIndoPacific<-as.data.frame(IndoPacific_Cell_Assembly[,2:ncol(IndoPacific_Cell_Assembly)])
+
+#iNterpolation and EXTrapolation for the first three Hill numbers (see Chao et al. 2004):
+IndoPacific_iNEXT<-iNEXT(listIndoPacific,q=c(0,1,2), 
+                         datatype = "abundance", 
+                         endpoint = NULL, #double the reference sample size
+                         conf=0.95, nboot=500)
+saveRDS(IndoPacific_iNEXT, "Completeness_output/IndoPacific_Completeness.rds") #DONE
+
+CompleteIndoPacificCells <- IndoPacific_iNEXT$iNextEst$coverage_based %>%
+  filter(Method == "Observed" & Order.q %in% 0 & SC >= 0.9)  
+
+#Exclude cells in SS with less than 4 species
+IndoPacific_SS = IndoPacific_SS[IndoPacific_SS$cell %in% CompleteIndoPacificCells$Assemblage, ]
+
+saveRDS(IndoPacific_SS, "Completeness_output/IndoPacific_SS_Completeness.rds") #DONE
+
+#Get the grid cell boundaries for cells with completeness >0.9
+wrapped_gridIndoPacific = wrapped_gridIndoPacific[wrapped_gridIndoPacific$seqnum %in% CompleteIndoPacificCells$Assemblage, ]
+
+gridIndoPacific = merge(wrapped_gridIndoPacific,CompleteIndoPacificCells,by.x="seqnum",by.y="Assemblage")
+saveRDS(gridIndoPacific, "Completeness_output/gridIndoPacific.rds") #DONE
+
+#End of this code
+```
+
+## Example: Bananaquit populations
+
+We selected a widespread distributed species to test our predictions of
+difference in stationary dynamic abundance from the mainland to islands,
+the Bananaquit *Coereba flaveola*
+
+```{r eval=FALSE}
+library(tidyverse) #seven packages in one for data management and visualization
+library(MASS); #R functions and datasets to support "Modern Applied Statistics with S", a book from W.N. Venables and B.D. Ripley
+source("ROUSSE-2.0.R") #Code from Dennis & Ponciano Ecology 2014.
+
+#Call data and manipulate it 
+
+Coefla <- readRDS("Completeness_output/Caribbean_SS_Completeness_elevation.rds") |>
+  ungroup() |>
+  filter(scientific_name == "Coereba flaveola") |>
+  mutate(Day.t = as.numeric(observation_date)-15339, #First estimation of estimate in a year basis
+         Site.k = as.character(cell), 
+         Year.t = as.numeric(year)) 
+
+#Filter cells with more than 3 years of sampling
+CellsMore3yrs <- Coefla %>% 
+  group_by(Site.k, Year.t) %>%
+  summarise(Lists = n()) %>% 
+  group_by(Site.k) %>% 
+  summarise(List_Year = n()) %>%
+  filter(List_Year >= 3)
+
+#Select only cells with more than 3 years of data
+Coefla = Coefla[Coefla$Site.k %in% CellsMore3yrs$Site.k, ]
+
+#Mean count per year per site
+Coefla <- Coefla |>
+  group_by(Site.k, Year.t) |>
+  summarise(Observed.year.y = round(mean(observation_count),0)) |>
+  left_join(Coefla, by = c("Site.k","Year.t"))
+
+#Mean count per day per site
+
+Coefla <- Coefla |>
+  group_by(Site.k, Day.t) |>
+  summarise(Observed.day.y = round(mean(observation_count),0)) |>
+  left_join(Coefla, by = c("Site.k","Day.t"))
+
+Coefla |> 
+  dplyr::select(state_code, Site.k, Year.t, Day.t, Observed.year.y, Observed.day.y, observation_count) |>
+  arrange(state_code) |>
+  head()
+
+saveRDS(Coefla, file = "Coereba_flaveola_data.rds")
+```
+
+We can use the map of coast line Mainlan-Island map from Sayer *et al.*
+(J. Oper. Oceanogr.)
+
+```{r warning=FALSE}
+library(sf); #deal with shape files
+library(tidyverse)
+library(maps); #load maps
+library(ggmagnify); # Zoom detail (inset figures)
+
+Coefla <- readRDS("Coereba_flaveola_data.rds")
+
+#The grid of cells
+gridCaribbeanPost <- readRDS("Completeness_output/gridCaribbean.rds") #3823 Sites
+
+#Only have the values in Coefla
+gridCaribbeanPost = gridCaribbeanPost[gridCaribbeanPost$seqnum %in% Coefla$Site.k, ] #1033 Sites (cells k)
+
+#A world map as reference
+
+world1 <- sf::st_as_sf(map(database = 'world', plot = FALSE, fill = TRUE))
+world1
+
+#Global Shoreline Vector
+#coast <- st_read("USGSEsriWCMC_GlobalIslands_v3/v10/globalislandsfix.gdb") 
+
+#Different projections!
+#Extract CRS of world1 map
+world1_crs <- st_crs(world1)
+#Transform the geodatabase to match the CRS projection of world1
+#coastal <- st_transform(coast, world1_crs)
+
+ggplot() +
+  geom_sf(data = world1)+
+  geom_sf(data=gridCaribbeanPost,
+          aes(color = SpRichness, 
+              fill = SpRichness)) +
+  scale_color_gradient2(low = alpha("#4575b4", 0.95), 
+                        mid = alpha("#ffffbf", 0.95), midpoint = 73,
+                        high = alpha("#d73027", 0.95))+
+  scale_fill_gradient2(low = alpha("#4575b4", 0.75), 
+                       mid = alpha("#ffffbf", 0.75), midpoint = 73,
+                       high = alpha("#d73027", 0.75))+
+  geom_point(data = Coefla, aes(x = longitude, y = latitude), alpha = 0.5, size = 0.001)+
+  coord_sf(xlim = c(-91, -59.4), 
+           ylim =  c(8, 27)) +
+  scale_x_continuous(breaks = seq(from = -90, to = -60, by = 15))+
+  labs(y = "Latitude",
+       x = "Longitude",       
+       tag = "",
+       title = "Neotropical region",
+       subtitle = "Caribbean (high eBird coverage-based completeness)",
+       color = "Species richness",
+       fill = "Species richness") +
+  theme_classic()+
+  theme(legend.position = "bottom",
+        legend.direction = "horizontal")+
+  guides(fill = F)+
+  geom_magnify(data = Coefla, aes(x = longitude, y = latitude), 
+               from = c(xmin = -67.3, xmax = -65.6, ymin = 17.9, ymax = 18.6), 
+               to = c(xmin = -70, xmax = -59, ymin = 22, ymax = 26.5),
+               shadow = TRUE) 
+
+```
+
+So, how is the time-series of the observed process?
+
+```{r warning=FALSE}
+
+gridCaribbeanPost$Site.k <- as.character(gridCaribbeanPost$seqnum)
+
+Coefla <- Coefla |>
+  left_join(gridCaribbeanPost)
+
+ggplot(Coefla, aes(x = observation_date, group = Site.k))+
+  geom_line(aes(y = log(Observed.day.y), color = SpRichness), alpha = 0.25, linetype = "dotted")+
+  geom_line(aes(y = log(Observed.year.y), color = SpRichness), alpha = 0.25, linetype = "dashed")+
+  scale_color_gradient2(low = alpha("#4575b4", 0.95), 
+                        mid = alpha("#ffffbf", 0.95), midpoint = 73,
+                        high = alpha("#d73027", 0.95))+
+  geom_point(aes(y = log(Observed.day.y)), alpha = 0.01, size = 0.05, shape = 1)+
+  geom_point(aes(y = log(Observed.year.y)), alpha = 0.01, size = 0.1, shape = 2)+
+  scale_y_continuous(expand = c(0,0))+
+  scale_x_date(expand = c(0,0))+
+  labs(x = "Observation date",
+       y = "Log(mean observed)",
+       color = "Species richness")+
+  theme_classic()+
+  theme(legend.position = "bottom")
+
+```
+
+This is very messy an difficult to see, lets reduce to values around the
+Min., 1st Qu., Median, Mean, 3rd Qu., and Max. values of the Species
+richness gradient.
+
+```{r}
+
+#Use some examples that represent sp richness:  different species richness
+
+summary(Coefla$SpRichness)
+
+CoeflaSimp <- Coefla |>
+  filter(SpRichness %in% c(12,14,16:29, 31:68,72,
+                           104,106,112,115,138,
+                           155,156,160,174,179,186:188,196,
+                           200:202,205:209,226:231,235,237,243:247,
+                           250:253,261,270,278:284,293:299,
+                           303:322,330:380)) |> #Select cells with variable richness and more than 200 observations
+  group_by(SpRichness) |>
+  sample_n(200) |>
+  as.data.frame()
+
+
+ggplot(CoeflaSimp, aes(x = observation_date, group = Site.k))+
+  geom_line(aes(y = log(Observed.day.y), color = SpRichness), linetype = "dotted")+
+  geom_line(aes(y = log(Observed.year.y), color = SpRichness), linetype = "dashed")+
+  scale_color_gradient2(low = alpha("#4575b4", 0.95), 
+                        mid = alpha("#ffffbf", 0.95), midpoint = 73,
+                        high = alpha("#d73027", 0.95))+
+  geom_point(aes(y = log(Observed.day.y)), size = 0.05, shape = 1)+
+  geom_point(aes(y = log(Observed.year.y)), size = 0.1, shape = 2)+
+  scale_y_continuous(expand = c(0,0))+
+  scale_x_date(expand = c(0,0))+
+  labs(x = "Observation date",
+       y = "Log(mean observed)",
+       color = "Species richness")+
+  theme_classic()+
+  theme(legend.position = "bottom")
+
+
+```
+
+In the previous figure, we assumed that the mean $\mu_{t,k}$ of counts
+each year (or day in the future) $t$ in each site $k$ represents the stationary
+distribution of the stochastic density dependence in the population.
+
+Look at the lower values of observed abundance in high richness sites,
+and higher estimates in low richness sites. Could we try to plug-in
+these time-series in the Gompertz state-state model? The problem is that
+this data is not uniform... so we need the diffusion process of
+Ornstein-Uhlenbeck process (Dennis & Ponciano, *Ecology* 2018).
+
+Lele *et al.* (*Ecol. Lett.* 2007) provide the example of the GSS model
+as a stochastic, density-dependent model (based on Dennis *et al.*,
+*Ecol. Monogr.* 2006). In this model, the latent variable of $N_t$ as
+the true abundance at time $t$ in the form: $$
+N_t = N_{t-1}* {\rm exp} \left(a + b * {\rm ln}N_{t-1} + E_t \right)
+$$ where $a$ is the intrinsic growth rate (a constant) and $b$ is a
+density dependence parameter (another constant), while the environmental
+stochasticity is $E_t \sim {\rm Normal}(0,\sigma^2)$. The variance
+$\sigma^2$ is the process noise or environmental variability of the
+system (Lele *et al.*, *Ecol. Lett.* 2007), where higher values could
+serve to identify catastrophic stochasticity (Dennis *et al.*, *Ecol.
+Monogr.* 1991).
+
+Thus, we can define $X_t = {\rm ln}(N_t)$, or the logarithm of the
+unobserved population abundances at time $t$, $t=(0,1,...,q)$. Applying
+the logarithm scale:
+
+$$
+X_t = X_{t-1} + a + (b*X_{t-1}) + E_t
+$$ factorizing out, $$
+X_t = a + X_{t-1}(1+b) + E_t
+$$ and simplify the terms, $c=1+b$ defines the density dependence
+parameter:
+
+$$
+X_t = a + cX_{t-1} + E_t
+$$
+
+In the GSS model, the probability distribution of $X_t$ is normal with
+mean and variance that change in function of time. We begin with a first
+value $X_0$, that is plug-in in $X_1 = a + c(X_0) +E_1$, then this $X_1$
+is plug-in in $X_2 = a + c(X_1) + E_2 = a + c(a + c(X_0) +E_1) + E_2$,
+and so on... eventually, when $X_t \rightarrow{\infty}$, $X_t$
+approaches a time-independent stationary distribution (carrying
+capacity):
+
+$$
+X_{\infty} \sim {\rm Normal} \biggl(\mu=\frac{a}{(1-c)}, {\rm var} = \frac{\sigma^2}{(1-c)^2} \biggr)
+$$ Thus, we can assume that our $X_0$ is part of that stationary
+distribution for the long-run time-series.
+
+The observations $Y_t$ are related to the true population abundances
+$X_t$ by: $Y_t = X_t + F_t$, where $F_t \sim {\rm Normal}(0,\tau^2)$.
+Here, the variance $\tau^2$ quantifies the amount of measurement error
+or observation error. We have to compute the MLE for
+$\Theta = [a, c, \sigma, \tau]$. However, we can also plug the
+observations $Y_t$ as a Poisson process ($Y_t \sim {\rm Poisson}(N_t)$,
+or in log-scale $Y_t \sim {\rm Poisson}({\rm ln}(X_t))$), reducing a
+parameter estimation ($\tau$). However, the nature of the data from
+eBird require account for the variaton of observation error in the
+state-space model. In addition, this data is unequal in time intervals,
+requiring including the diffusion Ornstein-Uhlenbeck process (Dennis &
+Ponciano, *Ecology* 2018).
+
+```{r}
+head(CoeflaSimp)
+
+CoeflaSimpAnual <- CoeflaSimp |>
+  dplyr::select(Site.k, Year.t, Observed.year.y, SpRichness, country) |>
+  unique() |>
+  filter(Site.k != "2737266")
+
+table(CoeflaSimpAnual$Site.k, CoeflaSimpAnual$Year.t) #this shows that some cells have only 1 or less observations
+
+##Filter cells with more than 6 years of sampling
+CellsMore6yrs <- CoeflaSimpAnual %>% 
+  group_by(Site.k, Year.t) %>%
+  summarise(Lists = n()) %>% 
+  group_by(Site.k) %>% 
+  summarise(List_Year = n()) %>%
+  filter(List_Year >= 6)
+
+
+#Select only cells with more than 6 years of data (from 3736 to 2695)
+CoeflaSimpAnual = CoeflaSimpAnual[CoeflaSimpAnual$Site.k %in% CellsMore6yrs$Site.k, ]
+
+#Chronological order
+CoeflaSimpAnual <- CoeflaSimpAnual[order(CoeflaSimpAnual$Site.k, CoeflaSimpAnual$Year.t),]
+
+
+
+ggplot(CoeflaSimpAnual, aes(x = Year.t, group = Site.k))+
+  geom_line(aes(y = log(Observed.year.y), color = SpRichness), linetype = "dashed")+
+  scale_color_gradient2(low = alpha("#4575b4", 0.95), 
+                        mid = alpha("#ffffbf", 0.95), midpoint = 73,
+                        high = alpha("#d73027", 0.95))+
+  geom_point(aes(y = log(Observed.year.y)), size = 0.1, shape = 2)+
+  scale_y_continuous(expand = c(0,0))+
+  scale_x_continuous(expand = c(0,0), breaks = c(2012, 2014, 2016, 2018, 2020, 2022))+
+  labs(x = "Observation date",
+       y = "Log(mean observed)",
+       color = "Species richness")+
+  theme_classic()+
+  theme(legend.position = "bottom")
+
+```
+onlye some sites to represent the process and run the model
+
+
+```{r eval=FALSE}
+PopID<- unique(CoeflaSimpAnual$Site.k) 
+#308 cells for conducting the example
+
+#empty list per PopID
+Coefla_Parm <- data.frame(cell = character(), 
+                          mu.hat = numeric(),
+                          theta.hat = numeric(),
+                          beta.hat = numeric(),
+                          tau.hat = numeric())
+
+for(PopID in unique(CoeflaSimpAnual$Site.k)){
+  
+  dt_tmp <- CoeflaSimpAnual[CoeflaSimpAnual$Site.k == PopID, ]
+  
+  Observed.t <- dt_tmp$Observed.year.y
+  Time.t <- dt_tmp$Year.t
+  #-------- Log-transform the observations to carry all the calculations in this program--------------------#
+  log.obs    <- log(Observed.t); 
+  #---------------------------------------------------------------------------------------------------------#
+  
+  #----------------------------------------------------------------------
+  #        PARAMETER ESTIMATION, PARAMETRIC BOOTSTRAP AND PREDICTIONS
+  #----------------------------------------------------------------------
+  # Before doing the calculations, the user has to specify ONLY the following 4 options:
+  
+  # 1. Do you want to compute the ML estimates or the REML estimates?
+  
+  method <- "REML" # alternatively, set method <- "ML"
+  
+  # 2. Do you want to plot the predictions?
+  pred.plot <- "FALSE" # Set it to "FALSE" if you do not want to plot the predictions
+  
+  # 3. Do you want to plot the parametric bootstrap distribution of the estimates?
+  pboot.plot <- "FALSE" # Set it to "FALSE" if you do not want to plot the bootstrap distribution of the estimates
+  
+  # 4. How many bootstrap replicates?
+  NBoot <- 10; # 10 just to try, for formal results use 1000 or more 
+  
+  #-------------------------------------------------------------------------------------------------#
+  #  5. RUN THE FOLLOWING LINE OF CODE TO COMPUTE THE ESTIMATES, PREDICTIONS,
+  #     AND RUN A PARAMETRIC BOOTSTRAP. THE USER DOES NOT NEED TO MODIFY THIS LINE OF CODE.
+  #     THE OUTPUT OF THE FUNCTION 'ROUSS.CALCS' IS A LIST AND THE USER CAN RETRIEVE EACH OF THE   
+  #     LIST ELEMENTS PRINTED AND SAVED IN THE OBJECT "all.results". 
+  #     THE 95% PARAMETRIC BOOTSTRAP FOR BOTH, THE PARAMETERS AND THE PREDICTIONS ARE COMPUTED 
+  #     BY THE FUNCTION "ROUSS.CALCS" 	
+  #      
+  #-------------------------------------------------------------------------------------------------#
+  
+  all.results <- ROUSS.CALCS(Yobs=log.obs,Tvec=Time.t, pmethod=method, nboot=NBoot, plot.pred=pred.plot, plot.bootdists = pboot.plot)
+  
+  Coefla_Parm <- rbind(Coefla_Parm, c(cell = PopID, all.results$parms.est))
+  
+  print(all.results$parms.est)
+}
+
+#It changes the column name, but save the estimates!!
+colnames(Coefla_Parm) = c("cell", "mu.hat", "theta.hat", "beta.hat", "tau.hat")
+
+saveRDS(Coefla_Parm, "Coefla_ParametersOUSS_abundance.rds")
+
+```
+
+$\hat{\mu}$ is the mean stationary log-abundance estimate for each site!
+
+We can also predict the estimated abundance for each year:
+
+```{r eval=FALSE}
+
+PopID<- unique(CoeflaSimpAnual$Site.k) 
+
+GSS.Ban <- list()
+
+for(PopID in unique(CoeflaSimpAnual$Site.k)){
+  
+  ParmPop <- Coefla_Parm %>%
+    filter(cell == PopID) %>%
+    dplyr::select(mu.hat, theta.hat, beta.hat, tau.hat)
+
+    dt_tmp <- CoeflaSimpAnual[CoeflaSimpAnual$Site.k == PopID, ]
+  
+    Observed.t <- dt_tmp$Observed.year.y
+    Tvec <- dt_tmp$Year.t
+  #-------- Log-transform the observations to carry all the calculations in this program--------------------#
+    Yobs <- log(Observed.t); 
+
+    ROUSS.predict(parms = as.numeric(ParmPop), Yobs = Yobs, Tvec = Tvec, plot.it = "TRUE")
+
+  PRBan.parms <- c(as.numeric(ParmPop))
+  #Parameteric Bootstrap function and confidence intervals
+  B = NBoot
+
+  tt <- Tvec-Tvec[1]
+  long.t <- tt[1]:max(tt)
+  nparms    <- length(PRBan.parms);
+  preds.boot1<- matrix(0,nrow=B,ncol=length(tt))
+  preds.boot2<- matrix(0,nrow=B,ncol=length(long.t))
+
+  boot.remles <- matrix(0,nrow=B,ncol=nparms+1); 
+  all.sims  <- ROUSS.sim(nsims=B,parms=PRBan.parms,Tvec=Tvec);
+  all.preds <- ROUSS.predict(parms=PRBan.parms, Yobs=Yobs,Tvec=Tvec,plot.it="FALSE")
+  reml.preds<- all.preds[[1]][,2]
+  reml.longpreds <- all.preds[[2]][,2]		
+
+  for(b in 1:B ){
+  
+    bth.timeseries <- all.sims[,b];
+    remles.out <- ROUSS.REML(Yobs=bth.timeseries,Tvec=Tvec, parms.guess=PRBan.parms);
+    boot.remles[b,] <- c(remles.out$remls, remles.out$lnLhat);
+    all.bootpreds <- ROUSS.predict(parms=remles.out$remls, Yobs=bth.timeseries,Tvec=Tvec,plot.it="FALSE");
+    preds.boot1[b,] <- all.bootpreds[[1]][,2]
+    preds.boot2[b,] <- all.bootpreds[[2]][,2]
+  
+  } 
+
+CIs.mat <- apply(boot.remles,2,FUN=function(x){quantile(x,probs=c(0.025,0.975))});
+CIs.mat <- rbind(CIs.mat[1,1:4],PRBan.parms,CIs.mat[2,1:4]);
+rownames(CIs.mat) <- c("2.5%","REMLE","97.5%");
+colnames(CIs.mat) <- c("mu", "theta","betasq","tausq");
+
+preds.CIs1 <- apply(preds.boot1,2,FUN=function(x){quantile(x,probs=c(0.025,0.975))});
+mean.boots <- apply(preds.boot1,2,FUN=function(x){quantile(x,probs=0.50)})
+preds.CIs1 <- t(rbind(Tvec,reml.preds-(mean.boots-preds.CIs1[1,]), reml.preds, reml.preds+(preds.CIs1[2,]-mean.boots)));
+colnames(preds.CIs1) <- c("Year","2.5%","REMLE","97.5%");
+
+preds.CIs2 <- apply(preds.boot2,2,FUN=function(x){quantile(x,probs=c(0.025,0.975))});
+mean.boots2 <- apply(preds.boot2,2,FUN=function(x){quantile(x,probs=0.50)})
+preds.CIs2 <- t(rbind(long.t+Tvec[1],reml.longpreds-(mean.boots2-preds.CIs2[1,]), reml.longpreds, reml.longpreds+(preds.CIs2[2,]-mean.boots2)));
+
+#preds.CIs2 <- apply(preds.boot2,2,FUN=function(x){quantile(x,probs=c(0.025,0.5,0.975))});
+#preds.CIs2 <- t(rbind(long.t+Tvec[1],preds.CIs2));
+colnames(preds.CIs2) <- c("Year","2.5%","REMLE","97.5%");
+#pred.CIs2 <- cbind(preds.CIs2[,1], reml.longpreds-(preds.CIs2[,3]-preds.CIs2[,2]),reml.longpreds,reml.longpreds+(preds.CIs2[,4]-preds.CIs2[,3]))
+
+boot.list <- list(boot.remles = boot.remles, CIs.mat = CIs.mat, preds.CIs1 = preds.CIs1, 
+                  preds.CIs2=preds.CIs2)
+
+
+boot.list$preds.CIs1
+
+df.boot <- as.data.frame(cbind(PopID, boot.list$preds.CIs1))
+
+GSS.Ban <- c(GSS.Ban, list(df.boot))
+
+}
+
+
+#extract estimates
+GSS.BanAll <- bind_rows(GSS.Ban)
+colnames(GSS.BanAll) <-c("Site.k", "Year.t","Low","REMLE","High");
+
+GSS.BanAll <- GSS.BanAll %>%
+  mutate_at(c("Year.t","Low","REMLE","High"), as.numeric) %>%
+  left_join(CoeflaSimpAnual, by = c("Site.k", "Year.t"))
+
+saveRDS(GSS.BanAll, "Coefla_predictedAbundance_REMLE_OUSS.rds")
+```
+
+
+```{r}
+
+GSS.BanAll <- readRDS("Coefla_predictedAbundance_REMLE_OUSS.rds")
+
+ggplot(GSS.BanAll, aes(x = Year.t))+
+  geom_line(aes(y = log(Observed.year.y), group = Site.k, color = SpRichness), linetype = "dotted")+
+  geom_point(aes(y = log(Observed.year.y), fill = SpRichness), shape = 21)+
+  geom_line(aes(y = log(REMLE), group = Site.k, color = SpRichness), linetype = "solid")+
+  geom_point(aes(y = log(REMLE), fill = SpRichness), shape = 22)+
+  scale_color_gradient2(low = alpha("#4575b4", 0.95), 
+                        mid = alpha("#ffffbf", 0.95), midpoint = 73,
+                        high = alpha("#d73027", 0.95))+
+  scale_fill_gradient2(low = alpha("#4575b4", 0.95), 
+                        mid = alpha("#ffffbf", 0.95), midpoint = 73,
+                        high = alpha("#d73027", 0.95))+
+  labs(x = "t",
+       y = "log(Observed / estimated abundance)",
+       color = "Species richness",
+       fill = "Species richness",
+       title = "62 sites (hexagonal cells)")+
+  theme_classic()+
+  theme(legend.position = c(0.8,0.8),
+        legend.direction = "horizontal")
+
+ggplot(GSS.BanAll, aes(x = SpRichness, fill = SpRichness))+
+  geom_point(aes(y = REMLE), shape = 22)+
+  geom_point(aes(y = Observed.year.y), shape = 21)+
+  geom_smooth(aes(x = SpRichness, y = REMLE), method = "lm", linetype = "solid")+
+  geom_smooth(aes(x = SpRichness, y = Observed.year.y), method = "lm", linetype = "dashed")+
+  scale_fill_gradient2(low = alpha("#4575b4", 0.95), 
+                        mid = alpha("#ffffbf", 0.95), midpoint = 73,
+                        high = alpha("#d73027", 0.95))+
+  labs(x = "Species richness",
+       y = "Observed / estimated abundance",
+       fill = "Species richness",
+       title = "Relationship of abundance and species richness")+
+  theme_classic()+
+  theme(legend.position = c(0.75,0.75),
+        legend.direction = "horizontal")
+
+```
+
+### We can map our data
+
+```{r}
+
+GSS.map.df <- GSS.BanAll %>%
+  group_by(Site.k, Year.t, REMLE) %>%
+  summarise(SpRichness = mean(SpRichness),
+            lon = mean(longitude),
+            lat = mean(latitude))
+
+ggplot() +
+  geom_sf(data = world1)+
+  geom_point(data = GSS.map.df, 
+             aes(x = lon, y = lat, size = REMLE, fill = SpRichness), alpha = 0.5, shape = 21)+
+  scale_fill_gradient2(low = alpha("#4575b4", 0.75), 
+                       mid = alpha("#ffffbf", 0.75), midpoint = 73,
+                       high = alpha("#d73027", 0.75))+
+  coord_sf(xlim = c(-91, -59.4), 
+           ylim =  c(8, 27)) +
+  scale_x_continuous(breaks = seq(from = -90, to = -60, by = 15))+
+  labs(y = "Latitude",
+       x = "Longitude",       
+       tag = "",
+       title = "Caribbean (high eBird coverage-based completeness)",
+       subtitle = "Abundance estimation using GSS(OUSS) models for Bananaquit",
+       fill = "Species richness",
+       size = "Stationary abundance estimation") +
+  theme_classic()+
+  theme(legend.position = "bottom",
+        legend.direction = "horizontal")+
+  geom_magnify(data = GSS.map.df, aes(x = lon, y = lat), 
+               from = c(xmin = -86.2, xmax = -81.2, ymin = 8, ymax = 13.5), 
+               to = c(xmin = -75, xmax = -62, ymin = 10, ymax = 25),
+               shadow = TRUE) 
+
+```
+
+End of this document.
+Orlando.
+
+## A previous approach (reducing the observer error parameter and applying Data Cloning)
+
+We tried with the Poisson process (adjust to the length of the time
+series). Here is the GSS.dc model:
+
+```{r eval=FALSE}
+StochGSS2.dc <- function(){
+
+  # Priors on model parameters. Priors are DC1 in Lele et al (2007)
+    a1 ~ dnorm(0,1);   # constant, the population growth rate. 
+    c1 ~ dunif(-1,1);      # constant, the density dependence parameter. 
+    sig1 ~ dlnorm(-0.5,10); #variance parameter of stochastic  environment (process noise) in the system
+    stovar1 <- 1/pow(sig1,2)
+
+    for(k in 1:K){
+      # Simulate trajectory that depends on the previous
+      mean_X1[1,k] <- a1/(1-c1) # Expected value of the first realization of the process
+                          # this is drawn from the stationary distribution of the process
+                          # Equation 14 (main text) and  A.4 in Appendix of Dennis et al 2006
+      Varno1[k] <- pow(sig1,2)/(1-pow(c1,2)) #. Equation A.5 in Appendix of Dennis et al 2006
+      
+ 
+      # Updating the state: Stochastic process for 29 steps
+      X1[1,k]~dnorm(mean_X1[1,k], 1/Varno1[k]); #first estimation of population
+      
+      #iteration of the GSS model in the data
+      for (i in 2:12) {
+        mean_X1[i,k] <- a1 + c1 * X1[(i - 1),k]
+        X1[i,k] ~ dnorm(mean_X1[i,k], stovar1) # Et is included here since a+cX(t-1) + Et ~ Normal(a+cX(t-1),sigma^2)
+      }
+  
+    # Updating the observations, from the counts
+      for (i in 1:12) {
+        Y1[i,k] ~ dpois(exp(X1[i,k])) #Here we can plug the probability of detection, p*exp(X1[i,k]), and we could also estimate it from the data!
+      }
+  }
+
+}
+
+```
+
+Now, we select the data, first Costa Rica - Alejuela (CR-A), which has
+complete data 2012-2023.
+
+```{r eval=FALSE}
+table(Pop$state_code, Pop$year)
+
+#Costa Rica - Alejuela
+
+CR.A <- Pop %>%
+  dplyr::filter(state_code == "CR-A") %>%
+  dplyr::select(mu_count)
+
+CR <- round(CR.A$mu_count, 0)
+
+datalistGSS.CR.dc <- list(K = 1,
+                       Y1 = dcdim(data.matrix(CR))) # Not need to be in LOG!!!
+
+dcrun.GSS2.CR <- dc.fit(data = datalistGSS.CR.dc,
+                          params = c("a1", "c1", "sig1"), #extract from the model
+                          model = StochGSS2.dc, 
+                          n.clones = c(5,10,50,100,150),
+                          multiply = "K",
+                          n.chains = 10,
+                          n.adapt = 10000,
+                          n.update = 10000,
+                          thin = 10,
+                          n.iter = 100000)
+
+summary(dcrun.GSS2.CR);
+
+dcdiag(dcrun.GSS2.CR) 
+
+```
+
+Now, Aruba (Lesser Antilles), missing the two first years of data,
+complete data 2014-2023
+
+```{r eval=FALSE}
+
+A <- Pop %>%
+  dplyr::filter(state_code == "AW-") %>%
+  dplyr::select(mu_count)
+
+AW <- c(round(A$mu_count, 0)) #the
+
+#and have to adjust the model
+StochGSS2.AW.dc <- function(){
+
+  # Priors on model parameters. Priors are DC1 in Lele et al (2007)
+    a1 ~ dnorm(0,1);   # constant, the population growth rate. 
+    c1 ~ dunif(-1,1);      # constant, the density dependence parameter. 
+    sig1 ~ dlnorm(-0.5,10); #variance parameter of stochastic  environment (process noise) in the system
+    stovar1 <- 1/pow(sig1,2)
+
+    for(k in 1:K){
+      # Simulate trajectory that depends on the previous
+      mean_X1[1,k] <- a1/(1-c1) # Expected value of the first realization of the process
+                          # this is drawn from the stationary distribution of the process
+                          # Equation 14 (main text) and  A.4 in Appendix of Dennis et al 2006
+      Varno1[k] <- pow(sig1,2)/(1-pow(c1,2)) #. Equation A.5 in Appendix of Dennis et al 2006
+      
+ 
+      # Updating the state: Stochastic process for 29 steps
+      X1[1,k]~dnorm(mean_X1[1,k], 1/Varno1[k]); #first estimation of population
+      
+      #iteration of the GSS model in the data
+      for (i in 2:10) {
+        mean_X1[i,k] <- a1 + c1 * X1[(i - 1),k]
+        X1[i,k] ~ dnorm(mean_X1[i,k], stovar1) # Et is included here since a+cX(t-1) + Et ~ Normal(a+cX(t-1),sigma^2)
+      }
+  
+    # Updating the observations, from the counts
+      for (i in 1:10) {
+        Y1[i,k] ~ dpois(exp(X1[i,k])) #Here we can plug the probability of detection, p*exp(X1[i,k]), and we could also estimate it from the data!
+      }
+  }
+
+}
+
+
+datalistGSS.AW.dc <- list(K = 1,
+                       Y1 = dcdim(data.matrix(AW))) # Not need to be in LOG!!!
+
+dcrun.GSS2.AW <- dc.fit(data = datalistGSS.AW.dc,
+                          params = c("a1", "c1", "sig1"), #extract from the model
+                          model = StochGSS2.AW.dc, 
+                          n.clones = c(5,10,50,100,150),
+                          multiply = "K",
+                          n.chains = 10,
+                          n.adapt = 10000,
+                          n.update = 10000,
+                          thin = 10,
+                          n.iter = 100000)
+
+summary(dcrun.GSS2.AW);
+
+dcdiag(dcrun.GSS2.AW) 
+
+```
+
+Let's try Puerto Rico - San Juan, which has *NA* in 2013 and 2014. I
+will run from 2015 to 2023
+
+```{r eval=FALSE}
+
+PR.SJ <- Pop %>%
+  dplyr::filter(state_code == "PR-SJ") %>%
+  dplyr::select(mu_count)
+
+PR <- c(round(PR.SJ$mu_count, 0)) #the
+
+#and have to adjust the model
+StochGSS2.PR.dc <- function(){
+
+  # Priors on model parameters. Priors are DC1 in Lele et al (2007)
+    a1 ~ dnorm(0,1);   # constant, the population growth rate. 
+    c1 ~ dunif(-1,1);      # constant, the density dependence parameter. 
+    sig1 ~ dlnorm(-0.5,10); #variance parameter of stochastic  environment (process noise) in the system
+    stovar1 <- 1/pow(sig1,2)
+
+    for(k in 1:K){
+      # Simulate trajectory that depends on the previous
+      mean_X1[1,k] <- a1/(1-c1) # Expected value of the first realization of the process
+                          # this is drawn from the stationary distribution of the process
+                          # Equation 14 (main text) and  A.4 in Appendix of Dennis et al 2006
+      Varno1[k] <- pow(sig1,2)/(1-pow(c1,2)) #. Equation A.5 in Appendix of Dennis et al 2006
+      
+ 
+      # Updating the state: Stochastic process for 29 steps
+      X1[1,k]~dnorm(mean_X1[1,k], 1/Varno1[k]); #first estimation of population
+      
+      #iteration of the GSS model in the data
+      for (i in 2:10) {
+        mean_X1[i,k] <- a1 + c1 * X1[(i - 1),k]
+        X1[i,k] ~ dnorm(mean_X1[i,k], stovar1) # Et is included here since a+cX(t-1) + Et ~ Normal(a+cX(t-1),sigma^2)
+      }
+  
+    # Updating the observations, from the counts
+      for (i in 1:10) {
+        Y1[i,k] ~ dpois(exp(X1[i,k])) #Here we can plug the probability of detection, p*exp(X1[i,k]), and we could also estimate it from the data!
+      }
+  }
+
+}
+
+
+datalistGSS.PR.dc <- list(K = 1,
+                       Y1 = dcdim(data.matrix(PR))) # Not need to be in LOG!!!
+
+dcrun.GSS2.PR <- dc.fit(data = datalistGSS.PR.dc,
+                          params = c("a1", "c1", "sig1"), #extract from the model
+                          model = StochGSS2.PR.dc, 
+                          n.clones = c(5,10,50,100,150),
+                          multiply = "K",
+                          n.chains = 10,
+                          n.adapt = 10000,
+                          n.update = 10000,
+                          thin = 10,
+                          n.iter = 100000)
+
+summary(dcrun.GSS2.PR);
+
+dcdiag(dcrun.GSS2.PR) 
+
+```
+
+Let's try Venezuela - Miranda, which has data from 2016 to 2023
+
+```{r eval=FALSE}
+
+VE.M <- Pop %>%
+  dplyr::filter(state_code == "VE-M") %>%
+  dplyr::select(mu_count)
+
+VE <- c(round(VE.M$mu_count, 0)) #the
+
+#and have to adjust the model
+StochGSS2.VE.dc <- function(){
+
+  # Priors on model parameters. Priors are DC1 in Lele et al (2007)
+    a1 ~ dnorm(0,1);   # constant, the population growth rate. 
+    c1 ~ dunif(-1,1);      # constant, the density dependence parameter. 
+    sig1 ~ dlnorm(-0.5,10); #variance parameter of stochastic  environment (process noise) in the system
+    stovar1 <- 1/pow(sig1,2)
+
+    for(k in 1:K){
+      # Simulate trajectory that depends on the previous
+      mean_X1[1,k] <- a1/(1-c1) # Expected value of the first realization of the process
+                          # this is drawn from the stationary distribution of the process
+                          # Equation 14 (main text) and  A.4 in Appendix of Dennis et al 2006
+      Varno1[k] <- pow(sig1,2)/(1-pow(c1,2)) #. Equation A.5 in Appendix of Dennis et al 2006
+      
+ 
+      # Updating the state: Stochastic process for 29 steps
+      X1[1,k]~dnorm(mean_X1[1,k], 1/Varno1[k]); #first estimation of population
+      
+      #iteration of the GSS model in the data
+      for (i in 2:9) {
+        mean_X1[i,k] <- a1 + c1 * X1[(i - 1),k]
+        X1[i,k] ~ dnorm(mean_X1[i,k], stovar1) # Et is included here since a+cX(t-1) + Et ~ Normal(a+cX(t-1),sigma^2)
+      }
+  
+    # Updating the observations, from the counts
+      for (i in 1:9) {
+        Y1[i,k] ~ dpois(exp(X1[i,k])) #Here we can plug the probability of detection, p*exp(X1[i,k]), and we could also estimate it from the data!
+      }
+  }
+
+}
+
+
+datalistGSS.VE.dc <- list(K = 1,
+                       Y1 = dcdim(data.matrix(VE))) # Not need to be in LOG!!!
+
+dcrun.GSS2.VE <- dc.fit(data = datalistGSS.VE.dc,
+                          params = c("a1", "c1", "sig1"), #extract from the model
+                          model = StochGSS2.VE.dc, 
+                          n.clones = c(5,10,50,100,150),
+                          multiply = "K",
+                          n.chains = 10,
+                          n.adapt = 10000,
+                          n.update = 10000,
+                          thin = 10,
+                          n.iter = 100000)
+
+summary(dcrun.GSS2.VE);
+dcdiag(dcrun.GSS2.VE)
+
+```
+
+Let's try Grenada - Saint Andrew, which has six years of data
+
+```{r eval=FALSE}
+
+GR.SA <- Pop %>%
+  dplyr::filter(state_code == "GD-01") %>%
+  dplyr::select(mu_count)
+
+GR <- c(round(GR.SA$mu_count, 0)) #the
+
+#and have to adjust the model
+StochGSS2.GR.dc <- function(){
+
+  # Priors on model parameters. Priors are DC1 in Lele et al (2007)
+    a1 ~ dnorm(0,1);   # constant, the population growth rate. 
+    c1 ~ dunif(-1,1);      # constant, the density dependence parameter. 
+    sig1 ~ dlnorm(-0.5,10); #variance parameter of stochastic  environment (process noise) in the system
+    stovar1 <- 1/pow(sig1,2)
+
+    for(k in 1:K){
+      # Simulate trajectory that depends on the previous
+      mean_X1[1,k] <- a1/(1-c1) # Expected value of the first realization of the process
+                          # this is drawn from the stationary distribution of the process
+                          # Equation 14 (main text) and  A.4 in Appendix of Dennis et al 2006
+      Varno1[k] <- pow(sig1,2)/(1-pow(c1,2)) #. Equation A.5 in Appendix of Dennis et al 2006
+      
+ 
+      # Updating the state: Stochastic process for 29 steps
+      X1[1,k]~dnorm(mean_X1[1,k], 1/Varno1[k]); #first estimation of population
+      
+      #iteration of the GSS model in the data
+      for (i in 2:6) {
+        mean_X1[i,k] <- a1 + c1 * X1[(i - 1),k]
+        X1[i,k] ~ dnorm(mean_X1[i,k], stovar1) # Et is included here since a+cX(t-1) + Et ~ Normal(a+cX(t-1),sigma^2)
+      }
+  
+    # Updating the observations, from the counts
+      for (i in 1:6) {
+        Y1[i,k] ~ dpois(exp(X1[i,k])) #Here we can plug the probability of detection, p*exp(X1[i,k]), and we could also estimate it from the data!
+      }
+  }
+
+}
+
+
+datalistGSS.GR.dc <- list(K = 1,
+                       Y1 = dcdim(data.matrix(GR))) # Not need to be in LOG!!!
+
+dcrun.GSS2.GR <- dc.fit(data = datalistGSS.GR.dc,
+                          params = c("a1", "c1", "sig1"), #extract from the model
+                          model = StochGSS2.GR.dc, 
+                          n.clones = c(5,10,50,100,150),
+                          multiply = "K",
+                          n.chains = 10,
+                          n.adapt = 10000,
+                          n.update = 10000,
+                          thin = 10,
+                          n.iter = 100000)
+
+summary(dcrun.GSS2.GR);
+
+dcdiag(dcrun.GSS2.GR)
+
+```
+
+And Jamaica - Saint Andrew, which has four years of data
+
+```{r eval=FALSE}
+
+JM.SA <- Pop %>%
+  dplyr::filter(state_code == "JM-02") %>%
+  dplyr::select(mu_count)
+
+JM <- c(round(JM.SA$mu_count, 0)) #the
+
+#and have to adjust the model
+StochGSS2.JM.dc <- function(){
+
+  # Priors on model parameters. Priors are DC1 in Lele et al (2007)
+    a1 ~ dnorm(0,1);   # constant, the population growth rate. 
+    c1 ~ dunif(-1,1);      # constant, the density dependence parameter. 
+    sig1 ~ dlnorm(-0.5,10); #variance parameter of stochastic  environment (process noise) in the system
+    stovar1 <- 1/pow(sig1,2)
+
+    for(k in 1:K){
+      # Simulate trajectory that depends on the previous
+      mean_X1[1,k] <- a1/(1-c1) # Expected value of the first realization of the process
+                          # this is drawn from the stationary distribution of the process
+                          # Equation 14 (main text) and  A.4 in Appendix of Dennis et al 2006
+      Varno1[k] <- pow(sig1,2)/(1-pow(c1,2)) #. Equation A.5 in Appendix of Dennis et al 2006
+      
+ 
+      # Updating the state: Stochastic process for 29 steps
+      X1[1,k]~dnorm(mean_X1[1,k], 1/Varno1[k]); #first estimation of population
+      
+      #iteration of the GSS model in the data
+      for (i in 2:4) {
+        mean_X1[i,k] <- a1 + c1 * X1[(i - 1),k]
+        X1[i,k] ~ dnorm(mean_X1[i,k], stovar1) # Et is included here since a+cX(t-1) + Et ~ Normal(a+cX(t-1),sigma^2)
+      }
+  
+    # Updating the observations, from the counts
+      for (i in 1:4) {
+        Y1[i,k] ~ dpois(exp(X1[i,k])) #Here we can plug the probability of detection, p*exp(X1[i,k]), and we could also estimate it from the data!
+      }
+  }
+
+}
+
+
+datalistGSS.JM.dc <- list(K = 1,
+                       Y1 = dcdim(data.matrix(JM))) # Not need to be in LOG!!!
+
+dcrun.GSS2.JM <- dc.fit(data = datalistGSS.JM.dc,
+                          params = c("a1", "c1", "sig1"), #extract from the model
+                          model = StochGSS2.JM.dc, 
+                          n.clones = c(5,10,50,100,150),
+                          multiply = "K",
+                          n.chains = 10,
+                          n.adapt = 10000,
+                          n.update = 10000,
+                          thin = 10,
+                          n.iter = 100000)
+
+summary(dcrun.GSS2.JM);
+
+dcdiag(dcrun.GSS2.JM)
+
+```
+
+Now the null:
+
+```{r eval=FALSE}
+
+
+H0 <- round(Pop$mu_count, 0)
+
+#and have to adjust the model
+StochGSS2.H0.dc <- function(){
+
+  # Priors on model parameters. Priors are DC1 in Lele et al (2007)
+    a1 ~ dnorm(0,1);   # constant, the population growth rate. 
+    c1 ~ dunif(-1,1);      # constant, the density dependence parameter. 
+    sig1 ~ dlnorm(-0.5,10); #variance parameter of stochastic  environment (process noise) in the system
+    stovar1 <- 1/pow(sig1,2)
+
+    for(k in 1:K){
+      # Simulate trajectory that depends on the previous
+      mean_X1[1,k] <- a1/(1-c1) # Expected value of the first realization of the process
+                          # this is drawn from the stationary distribution of the process
+                          # Equation 14 (main text) and  A.4 in Appendix of Dennis et al 2006
+      Varno1[k] <- pow(sig1,2)/(1-pow(c1,2)) #. Equation A.5 in Appendix of Dennis et al 2006
+      
+ 
+      # Updating the state: Stochastic process for 29 steps
+      X1[1,k]~dnorm(mean_X1[1,k], 1/Varno1[k]); #first estimation of population
+      
+      #iteration of the GSS model in the data
+      for (i in 2:51) {
+        mean_X1[i,k] <- a1 + c1 * X1[(i - 1),k]
+        X1[i,k] ~ dnorm(mean_X1[i,k], stovar1) # Et is included here since a+cX(t-1) + Et ~ Normal(a+cX(t-1),sigma^2)
+      }
+  
+    # Updating the observations, from the counts
+      for (i in 1:51) {
+        Y1[i,k] ~ dpois(exp(X1[i,k])) #Here we can plug the probability of detection, p*exp(X1[i,k]), and we could also estimate it from the data!
+      }
+  }
+
+}
+
+
+datalistGSS.H0.dc <- list(K = 1,
+                       Y1 = dcdim(data.matrix(H0))) # Not need to be in LOG!!!
+
+dcrun.GSS2.H0 <- dc.fit(data = datalistGSS.H0.dc,
+                          params = c("a1", "c1", "sig1"), #extract from the model
+                          model = StochGSS2.H0.dc, 
+                          n.clones = c(5,10,50,100,150),
+                          multiply = "K",
+                          n.chains = 10,
+                          n.adapt = 10000,
+                          n.update = 10000,
+                          thin = 10,
+                          n.iter = 100000)
+
+summary(dcrun.GSS2.H0);
+
+dcdiag(dcrun.GSS2.H0)
+
+```
+
+Let's combine the results
+
+```{r eval=FALSE}
+
+MLE <- as.data.frame(rbind(coef(dcrun.GSS2.H0),
+             coef(dcrun.GSS2.CR),
+             coef(dcrun.GSS2.VE),
+             coef(dcrun.GSS2.AW),
+             coef(dcrun.GSS2.GR),
+             coef(dcrun.GSS2.PR),
+             coef(dcrun.GSS2.JM)))
+
+MLE$Pop <- c("Null",
+             "CR-A",
+             "VE-M",
+             "AW-",
+             "GD-01",
+             "PR-SJ",
+             "JM-02")
+
+MLE$N_equ <- exp(-(MLE$a1/(MLE$c1-1)))
+
+print(MLE)
+
+#Some figures
+
+#how many records per site?
+Pop %>% 
+  group_by(state_code) %>% 
+  summarise(AllRecords = sum(n_records))
+```
+
+Mainland sites
+
+```{r eval=FALSE}
+
+par(mfrow = c(1,2));#create a 2x2 plotting matrix
+
+hist(rnorm(10000, mean = MLE[2,5], sd = MLE[2,3]/(1-MLE[2,2])),
+     xlab = "Equilibrium density",
+     main = "Histogram of Costa Rica - Alejuela",
+     xlim = c(0,10));
+abline(v=MLE[2,5], col="blue");
+abline(v=mean(CR), col = "red");
+legend(5, 1500, legend=c("Abundance (estimated)", "Observation mean"),
+       col=c("blue", "red"), lty=1, cex=0.8);
+text(x = 8, y = 500, "n = 249")
+
+hist(rnorm(10000, mean = MLE[3,5], sd = MLE[3,3]/(1-MLE[3,2])),
+     xlab = "Equilibrium density",
+     main = "Histogram of Venezuela - Miranda",
+     xlim = c(0,10));
+abline(v=MLE[3,5], col="blue");
+abline(v=mean(VE), col = "red");
+text(x = 8, y = 500, "n = 521")
+```
+
+Lesser Antilles sites
+
+```{r eval=FALSE}
+
+par(mfrow = c(1,2));#create a 2x2 plotting matrix
+
+hist(rnorm(10000, mean = MLE[4,5], sd = MLE[4,3]/(1-MLE[4,2])),
+     xlab = "Equilibrium density",
+     main = "Histogram of Aruba",
+     xlim = c(0,10));
+abline(v=MLE[4,5], col="blue");
+abline(v=mean(AW), col = "red");
+text(x = 8, y = 500, "n = 229")
+
+hist(rnorm(10000, mean = MLE[5,5], sd = MLE[5,3]/(1-MLE[5,2])),
+     xlab = "Equilibrium density",
+     main = "Histogram of Grenada - Saint Andrew",
+     xlim = c(0,10));
+abline(v=MLE[5,5], col="blue");
+abline(v=mean(GR), col = "red");
+text(x = 8, y = 500, "n = 117")
+```
+
+Greater Antilles sites
+
+```{r eval=FALSE}
+par(mfrow = c(1,2));#create a 2x2 plotting matrix
+
+hist(rnorm(10000, mean = MLE[6,5], sd = MLE[6,3]/(1-MLE[6,2])),
+     xlab = "Equilibrium density",
+     main = "Histogram of Puerto Rico - San Juan",
+     xlim = c(0,10));
+abline(v=MLE[6,5], col="blue");
+abline(v=mean(PR), col = "red");
+text(x = 8, y = 500, "n = 105")
+
+hist(rnorm(10000, mean = MLE[7,5], sd = MLE[7,3]/(1-MLE[7,2])),
+     xlab = "Equilibrium density",
+     main = "Histogram of Jamaica - Saint Andrew",
+     xlim = c(0,10));
+abline(v=MLE[7,5], col="blue");
+abline(v=mean(JM), col = "red");
+text(x = 8, y = 500, "n = 18")
+```
+
+Null hypothesis and relationship
+
+```{r eval=FALSE}
+par(mfrow = c(1,2));#create a 2x2 plotting matrix
+
+hist(rnorm(10000, mean = MLE[1,5], sd = MLE[1,3]/(1-MLE[1,2])),
+     xlab = "Equilibrium density",
+     main = "Histogram of all the Meta-archipelago of the Caribbean",
+     xlim = c(0,10));
+abline(v=MLE[1,5], col="blue");
+abline(v=mean(H0), col = "red");
+text(x = 8, y = 500, "n = 1,239")
+
+MLE$S <- c(NA, 149, 76, 67, 51, 39, 31)
+
+plot(x = MLE[c(2:7),6], y = MLE[c(2:7),5], pch = 19, cex = 4,
+     xlim = c(0,150), ylim = c(0,5),
+     xlab = "Species richness",
+     ylab = "Abundance (estimated)",
+     main = "Hypothetical relationship",
+     col = c("#F36F20", "#DD692E", "#864268", "#704C76", "#434174","#01458A"));
+abline(lm(MLE$N_equ ~ MLE$S), col = "darkgray");
+text(x = 25, y = 1, expression('R' ^ 2~"= 0.189; p = 0.215"))
+
+```
+
+### Likelihood Ratio test
+
+The parameters for the estimation of the unknown, mean number of
+Bananaquit per list of ≤2 km and 10-120 minutes in the six sites $s$
+($s = CR, VE, AR, GD, PR, JM$) are $\mathbf{\Theta} = [a, c, \sigma]$.
+Several possible scenarios regarding the comparison of these quantities
+across sites comes to mind. The simple scenario is that all parameters
+are equal among the meta-archipelago and representing identical
+parameters $\mathbf{\Theta}$, thus our working null hypothesis is
+
+$$
+{\rm H_{0}} : \mathbf{\Theta}_{CR} = \mathbf{\Theta}_{VE} = \mathbf{\Theta}_{AW} = \mathbf{\Theta}_{GD} = \mathbf{\Theta}_{PR} = \mathbf{\Theta}_{JM} = \mathbf{\Theta}
+$$
+
+A very contrasting alternative hypothesis (Model1) represent differences
+among the sites $s$ in the meta-archipelago, and is $$
+{\rm H_{1}} : \mathbf{\Theta}_{CR} \neq \mathbf{\Theta}_{VE} \neq \mathbf{\Theta}_{AW} \neq \mathbf{\Theta}_{GD} \neq \mathbf{\Theta}_{PR} \neq \mathbf{\Theta}_{JM}
+$$
+
+A third hypothesis is that sub-regions within the meta-archipelago
+(Mainland vs Lesser Antilles vs Greater Antilles) have similar
+parameters $\mathbf{\Theta}_{Subregion}$, and they differ from the
+others...
+
+$$
+{\rm H_{2}} : \mathbf{\Theta}_{CR} = \mathbf{\Theta}_{VE} \neq \mathbf{\Theta}_{AW} = \mathbf{\Theta}_{GD} \neq \mathbf{\Theta}_{PR} = \mathbf{\Theta}_{JM}
+$$ or $$
+{\rm H_{2}} : \mathbf{\Theta}_{Mainland} \neq \mathbf{\Theta}_{Lesser Antilles} \neq \mathbf{\Theta}_{Greater Antilles}
+$$
+
+And another hypothesis is that representing "the island syndrome"
+(Mainland vs Islands) of difference in parameters
+$\mathbf{\Theta}_{Mainland-Island}$:
+
+$$
+{\rm H_{3}} : \mathbf{\Theta}_{CR} = \mathbf{\Theta}_{VE} \neq \mathbf{\Theta}_{AW} = \mathbf{\Theta}_{GD} = \mathbf{\Theta}_{PR} = \mathbf{\Theta}_{JM}
+$$ or $$
+{\rm H_{3}} : \mathbf{\Theta}_{Mainland} \neq \mathbf{\Theta}_{Islands}
+$$
+
+The LR test statistics are $$
+{\Lambda_{0-1}} = \frac{L_0(\mathbf{\hat\Theta})}{L_1(\mathbf{\hat\Theta}_{CR},\mathbf{\hat\Theta}_{VE},\mathbf{\hat\Theta}_{AW},\mathbf{\hat\Theta}_{GD},\mathbf{\hat\Theta}_{PR},\mathbf{\hat\Theta}_{JM})}
+$$
+
+$$
+{\Lambda_{0-2}} = \frac{L_0(\hat\Theta)}{L_2(\mathbf{\hat\Theta}_{Mainland},\mathbf{\hat\Theta}_{Lesser Antilles},\mathbf{\hat\Theta}_{Greater Antilles})}
+$$
+
+$$
+{\Lambda_{0-3}} = \frac{L_0(\hat\Theta)}{L_3(\mathbf{\hat\Theta}_{Mainland},\mathbf{\hat\Theta}_{Islands})}
+$$
+
+$$
+{\Lambda_{2-1}} = \frac{L_2(\mathbf{\hat\Theta}_{Mainland},\mathbf{\hat\Theta}_{Lesser Antilles},\mathbf{\hat\Theta}_{Greater Antilles})}{L_1(\mathbf{\hat\Theta}_{CR},\mathbf{\hat\Theta}_{VE},\mathbf{\hat\Theta}_{AW},\mathbf{\hat\Theta}_{GD},\mathbf{\hat\Theta}_{PR},\mathbf{\hat\Theta}_{JM})}
+$$
